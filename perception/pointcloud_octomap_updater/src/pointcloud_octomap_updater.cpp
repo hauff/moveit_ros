@@ -44,16 +44,16 @@
 namespace occupancy_map_monitor
 {
 
-PointCloudOctomapUpdater::PointCloudOctomapUpdater() : OccupancyMapUpdater("PointCloudUpdater"),
-                                                       private_nh_("~"),
-                                                       scale_(1.0),
-                                                       padding_(0.0),
-                                                       max_range_(std::numeric_limits<double>::infinity()),
-                                                       point_subsample_(1),
-                                                       point_cloud_subscriber_(NULL),
-                                                       point_cloud_filter_(NULL)
-{
-}
+PointCloudOctomapUpdater::PointCloudOctomapUpdater() :
+  OccupancyMapUpdater("PointCloudUpdater"),
+  private_nh_("~"),
+  scale_(1.0),
+  padding_(0.0),
+  max_range_(std::numeric_limits<double>::infinity()),
+  point_subsample_(1),
+  point_cloud_subscriber_(NULL),
+  point_cloud_filter_(NULL),
+  filtered_cloud_keep_organized_(false) {}
 
 PointCloudOctomapUpdater::~PointCloudOctomapUpdater()
 {
@@ -74,6 +74,8 @@ bool PointCloudOctomapUpdater::setParams(XmlRpc::XmlRpcValue &params)
     readXmlParam(params, "point_subsample", &point_subsample_);
     if (params.hasMember("filtered_cloud_topic"))
       filtered_cloud_topic_ = static_cast<const std::string&>(params["filtered_cloud_topic"]);
+    if (params.hasMember("filtered_cloud_keep_organized"))
+      filtered_cloud_keep_organized_ = (bool)params["filtered_cloud_keep_organized"];
   }
   catch (XmlRpc::XmlRpcException &ex)
   {
@@ -89,8 +91,10 @@ bool PointCloudOctomapUpdater::initialize()
   tf_ = monitor_->getTFClient();
   shape_mask_.reset(new point_containment_filter::ShapeMask());
   shape_mask_->setTransformCallback(boost::bind(&PointCloudOctomapUpdater::getShapeTransform, this, _1, _2));
+  
   if (!filtered_cloud_topic_.empty())
     filtered_cloud_publisher_ = private_nh_.advertise<sensor_msgs::PointCloud2>(filtered_cloud_topic_, 10, false);
+  
   return true;
 }
 
@@ -98,8 +102,10 @@ void PointCloudOctomapUpdater::start()
 {
   if (point_cloud_subscriber_)
     return;
+
   /* subscribe to point cloud topic using tf filter*/
   point_cloud_subscriber_ = new message_filters::Subscriber<sensor_msgs::PointCloud2>(root_nh_, point_cloud_topic_, 5);
+  
   if (tf_ && !monitor_->getMapFrame().empty())
   {
     point_cloud_filter_ = new tf::MessageFilter<sensor_msgs::PointCloud2>(*point_cloud_subscriber_, *tf_, monitor_->getMapFrame(), 5);
@@ -189,7 +195,7 @@ void PointCloudOctomapUpdater::cloudMsgCallback(const sensor_msgs::PointCloud2::
   }
 
   /* convert cloud message to pcl cloud object */
-  pcl::PointCloud<pcl::PointXYZ> cloud;
+  pcl::PointCloud<pcl::PointXYZRGB> cloud;
   pcl::fromROSMsg(*cloud_msg, cloud);
 
   /* compute sensor origin in map frame */
@@ -204,13 +210,19 @@ void PointCloudOctomapUpdater::cloudMsgCallback(const sensor_msgs::PointCloud2::
   }
 
   /* mask out points on the robot */
-  shape_mask_->maskContainment(cloud, sensor_origin_eigen, 0.0, max_range_, mask_);
-  updateMask(cloud, sensor_origin_eigen, mask_);
+  pcl::PointCloud<pcl::PointXYZ> cloud_p;
+  pcl::copyPointCloud(cloud, cloud_p);
+  shape_mask_->maskContainment(cloud_p, sensor_origin_eigen, 0.0, max_range_, mask_);
+  updateMask(cloud_p, sensor_origin_eigen, mask_);
 
   octomap::KeySet free_cells, occupied_cells, model_cells, clip_cells;
-  boost::scoped_ptr<pcl::PointCloud<pcl::PointXYZ> > filtered_cloud;
+  boost::scoped_ptr<pcl::PointCloud<pcl::PointXYZRGB> > filtered_cloud;
   if (!filtered_cloud_topic_.empty())
-    filtered_cloud.reset(new pcl::PointCloud<pcl::PointXYZ>());
+  {
+    filtered_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>());
+    if (filtered_cloud_keep_organized_)
+      filtered_cloud.reset(new pcl::PointCloud<pcl::PointXYZRGB>(cloud));
+  }
 
   tree_->lockRead();
 
@@ -225,26 +237,39 @@ void PointCloudOctomapUpdater::cloudMsgCallback(const sensor_msgs::PointCloud2::
       {
         //if (mask_[row_c + col] == point_containment_filter::ShapeMask::CLIP)
         //  continue;
-        const pcl::PointXYZ &p = cloud(col, row);
+        const pcl::PointXYZRGB &p = cloud(col, row);
+
+        bool is_filtered = true;
 
         /* check for NaN */
         if (!isnan(p.x) && !isnan(p.y) && !isnan(p.z))
-    {
-      /* transform to map frame */
-      tf::Vector3 point_tf = map_H_sensor * tf::Vector3(p.x, p.y, p.z);
+        {
+          /* transform to map frame */
+          tf::Vector3 point_tf = map_H_sensor * tf::Vector3(p.x, p.y, p.z);
 
-      /* occupied cell at ray endpoint if ray is shorter than max range and this point
-         isn't on a part of the robot*/
-      if (mask_[row_c + col] == point_containment_filter::ShapeMask::INSIDE)
-        model_cells.insert(tree_->coordToKey(point_tf.getX(), point_tf.getY(), point_tf.getZ()));
-      else if (mask_[row_c + col] == point_containment_filter::ShapeMask::CLIP)
-        clip_cells.insert(tree_->coordToKey(point_tf.getX(), point_tf.getY(), point_tf.getZ()));
-      else
+          /* occupied cell at ray endpoint if ray is shorter than max range and this point
+             isn't on a part of the robot*/
+          if (mask_[row_c + col] == point_containment_filter::ShapeMask::INSIDE)
+            model_cells.insert(tree_->coordToKey(point_tf.getX(), point_tf.getY(), point_tf.getZ()));
+          else if (mask_[row_c + col] == point_containment_filter::ShapeMask::CLIP)
+            clip_cells.insert(tree_->coordToKey(point_tf.getX(), point_tf.getY(), point_tf.getZ()));
+          else
           {
             occupied_cells.insert(tree_->coordToKey(point_tf.getX(), point_tf.getY(), point_tf.getZ()));
             if (filtered_cloud)
-              filtered_cloud->push_back(p);
+            {
+              if (!filtered_cloud_keep_organized_)
+                filtered_cloud->push_back(p);
+
+              is_filtered = false;
+            }
           }
+        }
+        if (filtered_cloud_keep_organized_ && is_filtered && filtered_cloud &&
+            row < filtered_cloud->height && col < filtered_cloud->width)
+        {
+          (*filtered_cloud)(col, row).x = (*filtered_cloud)(col, row).y = (*filtered_cloud)(col, row).z = NAN;
+          (*filtered_cloud)(col, row).r = (*filtered_cloud)(col, row).g = (*filtered_cloud)(col, row).b = 0;
         }
       }
     }

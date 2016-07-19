@@ -87,7 +87,8 @@ public:
   MoveGroupImpl(const Options &opt, const boost::shared_ptr<tf::Transformer> &tf, const ros::Duration &wait_for_server)
     : opt_(opt),
       node_handle_(opt.node_handle_),
-      tf_(tf)
+      tf_(tf),
+      acm_set_(false)
   {
     robot_model_ = opt.robot_model_ ? opt.robot_model_ : getSharedRobotModel(opt.robot_description_);
     if (!getRobotModel())
@@ -815,6 +816,12 @@ public:
     return replan_delay_;
   }
 
+  void setAllowedCollisionMatrix(const moveit_msgs::AllowedCollisionMatrix & acm)
+  {
+    acm_set_ = true;
+    acm_ = acm;
+  }
+
   void constructGoal(moveit_msgs::MoveGroupGoal &goal_out)
   {
     moveit_msgs::MoveGroupGoal goal;
@@ -824,6 +831,8 @@ public:
     goal.request.planner_id = planner_id_;
     goal.request.workspace_parameters = workspace_parameters_;
     goal.request.start_state.is_diff = true;
+    if(acm_set_)
+        goal.planning_options.planning_scene_diff.allowed_collision_matrix = acm_;
 
     if (considered_start_state_)
       robot_state::robotStateToRobotStateMsg(*considered_start_state_, goal.request.start_state);
@@ -1037,8 +1046,16 @@ private:
   boost::scoped_ptr<moveit_warehouse::ConstraintsStorage> constraints_storage_;
   boost::scoped_ptr<boost::thread> constraints_init_thread_;
   bool initializing_constraints_;
+
+  bool acm_set_;
+  moveit_msgs::AllowedCollisionMatrix acm_;
 };
 }
+}
+
+void moveit::planning_interface::MoveGroup::setAllowedCollisionMatrix(const moveit_msgs::AllowedCollisionMatrix & acm)
+{
+  impl_->setAllowedCollisionMatrix(acm);
 }
 
 moveit::planning_interface::MoveGroup::MoveGroup(const std::string &group_name, const boost::shared_ptr<tf::Transformer> &tf, const ros::Duration &wait_for_server)

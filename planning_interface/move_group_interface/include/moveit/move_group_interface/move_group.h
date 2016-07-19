@@ -45,6 +45,7 @@
 #include <moveit_msgs/Constraints.h>
 #include <moveit_msgs/Grasp.h>
 #include <moveit_msgs/PlaceLocation.h>
+#include <moveit_msgs/AllowedCollisionMatrix.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <boost/shared_ptr.hpp>
 #include <tf/tf.h>
@@ -184,6 +185,8 @@ public:
        The box is specified in the planning frame (i.e. relative to the robot root link start position).
        This is useful when the MoveGroup's group contains the root joint of the robot -- i.e. when planning motion for the robot relative to the world. */
   void setWorkspace(double minx, double miny, double minz, double maxx, double maxy, double maxz);
+
+  void setAllowedCollisionMatrix(const moveit_msgs::AllowedCollisionMatrix & acm);
 
   /** \brief If a different start state should be considered instead of the current state of the robot, this function sets that state */
   void setStartState(const moveit_msgs::RobotState &start_state);

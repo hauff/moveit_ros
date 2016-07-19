@@ -85,6 +85,7 @@ private:
   double padding_;
   double max_range_;
   unsigned int point_subsample_;
+  bool filtered_cloud_keep_organized_;
   std::string filtered_cloud_topic_;
   ros::Publisher filtered_cloud_publisher_;
 
